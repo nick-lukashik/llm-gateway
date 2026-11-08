@@ -1,6 +1,6 @@
 # AGENTS.md
 
-The model gateway of the platform, created from `nest-starter`: every service calls models only through it. An OpenAI-compatible API (`/api/v1/chat/completions`, `/api/v1/models`) plus jobs for long calls, over the owner's subscriptions: Codex CLI, Claude Code CLI, MiniMax HTTP. One replica with the Codex login volume (an exception to the contract). Postgres keeps the call journal with texts (14 days), provider pauses and jobs. Redis, RabbitMQ (events through outbox/inbox) and pg-boss (jobs) are added only when the service uses them, copied from `nest-example` ("Add a capability" in `README.md`). The human-facing description is `README.md`.
+The model gateway of the platform, created from `nest-starter`: every service calls models only through it. An OpenAI-compatible API (`/api/v1/chat/completions`, `/api/v1/models`) plus jobs for long calls, over the owner's subscriptions: Codex CLI and Claude Code CLI. One replica with the Codex login volume (an exception to the contract). Postgres keeps the call journal with texts (14 days), provider pauses and jobs. Redis, RabbitMQ (events through outbox/inbox) and pg-boss (jobs) are added only when the service uses them, copied from `nest-example` ("Add a capability" in `README.md`). The human-facing description is `README.md`.
 
 ## Commands
 
@@ -19,7 +19,7 @@ The model gateway of the platform, created from `nest-starter`: every service ca
 - `src/common/`: infrastructure without business logic, identical to `nest-example` and ready to move into a package: `http` (errors, request id, cursors, validation), `database`, `health`, `metrics`, `logging`, `openapi`, `context` (AsyncLocalStorage). Change it in `nest-example` first, then copy it here.
 - `src/db/`: Drizzle schema, types, `migrate.ts` (Argo CD Sync-hook Job before the Deployment: `node dist/db/migrate.js`).
 - `src/domain/`: provider-independent logic ported from the old gateway: `json-schema.ts` (schema checks, Codex strict mode, draft 7), `coerce.ts`, `failures.ts` (error codes and the text classifier), `pause.ts` (reset time from limit messages), `semaphore.ts`, `models.ts` (the catalog `config/models.json`).
-- `src/providers/`: Codex and Claude as CLI runs (`run-cli.ts`, an env allowlist in `provider.ts`), MiniMax over HTTP. A new CLI version can change the output they parse: pin it in the Dockerfile and check with a live call.
+- `src/providers/`: Codex and Claude as CLI runs (`run-cli.ts`, an env allowlist in `provider.ts`). A new CLI version can change the output they parse: pin it in the Dockerfile and check with a live call.
 - `src/gateway/`: the API (`gateway.controller.ts`, OpenAI shapes in `openai.ts`), client keys (`clients.ts`), the call path with slots, pauses and the journal (`gateway.service.ts`), jobs and the purge (`jobs.service.ts`), SQL (`gateway.repository.ts`).
 - `config/models.json`: models and efforts the CLIs offer; no secrets.
 - `scripts/client-key.mjs`: a new client key (stdout) and its `LLM_CLIENTS` entry (stderr).

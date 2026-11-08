@@ -53,8 +53,6 @@ const gatewayEnvSchema = z.object({
     CLAUDE_COMMAND: command('claude'),
     /** Claude Code subscription token (claude setup-token). Unset: Claude models unavailable. */
     CLAUDE_CODE_OAUTH_TOKEN: optionalText,
-    /** MiniMax API key. Unset: MiniMax models unavailable. */
-    MINIMAX_API_KEY: optionalText,
     /** Pause after a usage limit whose reset time the provider did not name. */
     LLM_QUOTA_PAUSE_SECONDS: z.coerce.number().int().min(60).max(86_400).default(3600),
     /** Longest wait for a free provider slot before 503 provider_unavailable. */

@@ -137,7 +137,6 @@ describe('claude command line', () => {
                 ANTHROPIC_AUTH_TOKEN: 'token',
                 CLAUDE_CODE_USE_BEDROCK: '1',
                 LLM_GATEWAY_TOKEN: 'gateway',
-                MINIMAX_API_KEY: 'minimax',
             },
         )
         expect(env).toEqual({

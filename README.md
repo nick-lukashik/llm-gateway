@@ -1,6 +1,6 @@
 # llm-gateway
 
-The model gateway of the platform: every service calls models only through it. An OpenAI-compatible API over the owner's subscriptions: Codex CLI (ChatGPT Plus), Claude Code CLI (Claude subscription) and MiniMax over HTTP; Gemini comes later. The caller picks the model and the reasoning effort; the gateway picks the account, waits for a slot, gets an answer that matches the JSON Schema (one correction round), pauses an account until its usage limit resets and journals every call.
+The model gateway of the platform: every service calls models only through it. An OpenAI-compatible API over the owner's subscriptions: Codex CLI (ChatGPT Plus), Claude Code CLI (Claude subscription); Gemini comes later. MiniMax was dropped (D-111). The caller picks the model and the reasoning effort; the gateway picks the account, waits for a slot, gets an answer that matches the JSON Schema (one correction round), pauses an account until its usage limit resets and journals every call.
 
 Created from [`nest-starter`](https://github.com/nick-lukashik/nest-starter) (`.template-version`). The provider adapters, schema handling, pauses and error classification come from the old gateway of Atelier, which ran in prod from 2026-10-28.
 
@@ -81,13 +81,12 @@ Run it once per client and use both outputs of the same run.
 
 ## Models
 
-`config/models.json`: the models and efforts of Codex CLI 0.165.0 (8 models, efforts `low` to `ultra`), Claude Code 2.1.308 (Fable, Opus, Sonnet, Haiku, `low` to `max`) and MiniMax M3.1 Flash. A new CLI version is pinned in the Dockerfile only after a live call.
+`config/models.json`: the models and efforts of Codex CLI 0.165.0 (8 models, efforts `low` to `ultra`), Claude Code 2.1.308 (Fable, Opus, Sonnet, Haiku, `low` to `max`). A new CLI version is pinned in the Dockerfile only after a live call.
 
 ## Logins
 
 - Codex: `codex login --device-auth` with `CODEX_HOME` on the login volume. The CLI refreshes its token in that folder, so the login belongs to one installation (one replica, D-105).
 - Claude: `claude setup-token` gives `CLAUDE_CODE_OAUTH_TOKEN` (sealed secret).
-- MiniMax: `MINIMAX_API_KEY` (sealed secret).
 
 A provider without its login answers 503 with the reason; `GET /api/v1/providers` shows it.
 

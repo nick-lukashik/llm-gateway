@@ -27,7 +27,7 @@ export type ProviderResult = {
     model: string
     inputTokens: number | null
     outputTokens: number | null
-    /** Provider state a correction round continues from (MiniMax: the messages). */
+    /** Provider state a correction round continues from (an HTTP provider's messages). */
     transcript?: unknown
 }
 

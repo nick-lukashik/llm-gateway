@@ -32,7 +32,7 @@ describe('pauseSeconds', () => {
     })
 
     it('uses Retry-After (at most 6 hours) and falls back otherwise', () => {
-        expect(pauseSeconds('MiniMax limit reached (retry after 120 s): busy', now, fallback)).toBe(120)
+        expect(pauseSeconds('Limit reached (retry after 120 s): busy', now, fallback)).toBe(120)
         expect(pauseSeconds('retry after 90000 s', now, fallback)).toBe(6 * 3600)
         expect(pauseSeconds('quota exceeded', now, fallback)).toBe(fallback)
         expect(pauseSeconds(null, now, fallback)).toBe(fallback)

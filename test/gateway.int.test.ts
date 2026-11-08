@@ -79,7 +79,6 @@ describe('llm gateway', () => {
             expect.arrayContaining([
                 'gpt-6-sol',
                 'claude-opus-5-5',
-                'minimax-m3.1-flash',
             ]),
         )
         const limited = await t.http().get('/api/v1/models').set('authorization', `Bearer ${LIMITED_KEY}`)

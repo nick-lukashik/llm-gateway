@@ -37,7 +37,6 @@ export const TEST_CLIENTS = JSON.stringify([
 export const fakeProviders = () => ({
     codex: new FakeProvider('codex'),
     claude: new FakeProvider('claude'),
-    minimax: new FakeProvider('minimax'),
 })
 
 export type TestApp = Awaited<ReturnType<typeof startApp>>
