@@ -1,6 +1,6 @@
 # Local dependencies: pnpm infra:up | infra:down | infra:reset (drops data).
 # Credentials are local-only placeholders; real ones come from the environment.
-name: nest-starter
+name: llm-gateway
 
 services:
     postgres:

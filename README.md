@@ -1,8 +1,12 @@
-# nest-starter
+# llm-gateway
 
-The template of a new NestJS API on this platform: HTTP, configuration, JSON logs, health, metrics, PostgreSQL + Drizzle, Zod validation, OpenAPI, graceful shutdown, tests on Testcontainers, Dockerfile, CI. A sample `notes` module shows the layout of a feature; replace it.
+The model gateway of the platform: every service calls models only through it. An OpenAI-compatible API over the owner's subscriptions: Codex CLI (ChatGPT Plus), Claude Code CLI (Claude subscription) and MiniMax over HTTP; Gemini comes later. The caller picks the model and the reasoning effort; the gateway picks the account, waits for a slot, gets an answer that matches the JSON Schema (one correction round), pauses an account until its usage limit resets and journals every call.
 
-Redis, RabbitMQ (events through outbox/inbox) and pg-boss (jobs) are not here. A service that needs one copies it from [`nest-example`](https://github.com/nick-lukashik/nest-example), the full reference where every capability runs and is tested together. "Add a capability" below lists the steps. The shared code in `src/common/` is identical in both repos, so a capability is a folder plus its wiring.
+Created from [`nest-starter`](https://github.com/nick-lukashik/nest-starter) (`.template-version`). The provider adapters, schema handling, pauses and error classification come from the old gateway of Atelier, which ran in prod from 2026-10-28.
+
+Decisions of the owner (2026-11-08): OpenAI-compatible API; synchronous calls with a 16-minute budget plus jobs for long ones; one replica with the Codex login volume; a key per client; the journal keeps texts for 14 days; runs only on the VPS; every model the CLIs offer.
+
+Subscriptions are for personal use: calls for other people need paid keys.
 
 ## What is inside
 
@@ -47,25 +51,49 @@ Swagger UI: `/docs` (except with `NODE_ENV=production`), document: `/openapi.jso
 
 ## API
 
-Prefix `/api`, version in the URI. The `x-request-id` header is accepted (if well-formed) or generated, and returned; `x-app-version` is `APP_VERSION`. CORS is off: browsers reach the API only through the web app's server.
+Base URL for OpenAI SDKs: `http://llm-gateway.prod.svc/api/v1` with the client's key as the API key. Every route needs `Authorization: Bearer <key>`.
 
-| Method and path                         | Response                                                      |
-| --------------------------------------- | ------------------------------------------------------------- |
-| `GET /api/v1/notes?limit=20&cursor=…`   | `{ items: Note[], nextCursor: string \| null }`, newest first |
-| `GET /api/v1/notes/:id`                 | `Note` or 404                                                 |
-| `POST /api/v1/notes` `{ title, body }`  | 201 `Note`                                                    |
-| `GET /health/live`, `GET /health/ready` | ready: 503 without Postgres                                   |
-| `GET /openapi.json`, `GET /docs`        | OpenAPI from the Zod schemas                                  |
+| Method and path                         | What                                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /api/v1/chat/completions`         | OpenAI chat completion. `model` from `/models`, `reasoning_effort` among the model's efforts (default: the model's), `response_format` `text` or `json_schema` (`json_object` and `stream` are refused), `metadata.purpose` names the call in the journal. `Idempotency-Key` returns the stored answer of a successful call for 24 h. Up to 16 minutes |
+| `GET /api/v1/models`                    | the models this key may call, with `efforts` and `default_effort`                                                                                                                                                                                                                                                                                      |
+| `POST /api/v1/jobs`                     | the same body; 202 with a job id at once, the call runs in the background                                                                                                                                                                                                                                                                              |
+| `GET /api/v1/jobs/:id`                  | `queued`, `running`, `succeeded` (with `result`, a chat completion) or `failed` (with `error`); only the client that queued it                                                                                                                                                                                                                         |
+| `GET /api/v1/providers`                 | admin keys: each provider's availability, pause, slots                                                                                                                                                                                                                                                                                                 |
+| `DELETE /api/v1/providers/:id/pause`    | admin keys: lift a pause by hand                                                                                                                                                                                                                                                                                                                       |
+| `GET /health/live`, `GET /health/ready` | ready: 503 without Postgres                                                                                                                                                                                                                                                                                                                            |
+| `GET /openapi.json`, `GET /docs`        | OpenAPI                                                                                                                                                                                                                                                                                                                                                |
 
-Error body: `{ code, message, details?: { path, message }[], requestId }` with `code` one of `VALIDATION_FAILED` (400), `NOT_FOUND` (404), `PAYLOAD_TOO_LARGE` (413, body over 1 MiB), `RATE_LIMITED` (429), `INTERNAL` (500), `UNAVAILABLE` (503: Postgres over a time budget or down, retry later), `TIMEOUT` (504: the request exceeded 10 s; a write may still have been applied).
+Errors of the model routes have the OpenAI shape `{ error: { message, type, code, param, retryable, resets_at } }`, with `code`: `bad_request` 400, `invalid_api_key` 401, `permission_denied` 403, `invalid_output` 422 (the answer missed the schema after a correction), `provider_quota` 429 (paused until `resets_at`, also in `Retry-After`), `provider_unavailable` 503 (`retryable: false` for a lost login), `provider_timeout` 504. Validation and database errors keep the service contract body.
 
-## Start a service from this template
+Text answers go through a one-field schema internally (`{ content }`), so every provider answers the same way.
 
-1. Create the repo from the template (GitHub "Use this template"); its CI publishes images, the template's own does not.
-2. Rename: `name` in `package.json`, `SERVICE_NAME` in `src/config/config.ts`, `name:` in `compose.yaml`, the title label in `Dockerfile`.
-3. Replace `src/notes/` with the service's modules (layout below), its table in `src/db/schema.ts` and its tests. Move `drizzle/` to the Trash and run `pnpm db:generate --name init`.
-4. Add the capabilities the service uses (next section), and only those.
-5. gitops: `apps/<svc>/prod/` with `components/service` and `components/api`, the ConfigMap, the SealedSecret with `DATABASE_URL` (gitops `apps/README.md`).
+## Clients
+
+`LLM_CLIENTS` lists the clients: name, SHA-256 of the key, allowed models (`*` for all), `admin`. The hashes are not secrets (ConfigMap); the key goes into the client's sealed secrets:
+
+```sh
+node scripts/client-key.mjs tailor-api '*' 2>/dev/null | kubectl create secret generic ...   # the key, never printed
+node scripts/client-key.mjs tailor-api '*' >/dev/null                                       # the entry
+```
+
+Run it once per client and use both outputs of the same run.
+
+## Models
+
+`config/models.json`: the models and efforts of Codex CLI 0.165.0 (8 models, efforts `low` to `ultra`), Claude Code 2.1.308 (Fable, Opus, Sonnet, Haiku, `low` to `max`) and MiniMax M3.1 Flash. A new CLI version is pinned in the Dockerfile only after a live call.
+
+## Logins
+
+- Codex: `codex login --device-auth` with `CODEX_HOME` on the login volume. The CLI refreshes its token in that folder, so the login belongs to one installation (one replica, D-105).
+- Claude: `claude setup-token` gives `CLAUDE_CODE_OAUTH_TOKEN` (sealed secret).
+- MiniMax: `MINIMAX_API_KEY` (sealed secret).
+
+A provider without its login answers 503 with the reason; `GET /api/v1/providers` shows it.
+
+## Journal
+
+`llm_calls`: client, purpose, model, effort, provider, account, tokens, time, outcome, the request messages with secrets masked and the answer. Calls and finished jobs older than `LLM_LOG_RETENTION_DAYS` (14) are deleted every 6 hours. Logs carry ids and numbers, never the texts.
 
 ## Add a capability
 
@@ -107,15 +135,15 @@ A dependency that hangs fails the request fast instead of filling the pool (serv
 ## Docker
 
 ```sh
-docker build --build-arg APP_VERSION=$(git rev-parse HEAD) -t nest-starter .
+docker build --build-arg APP_VERSION=$(git rev-parse HEAD) -t llm-gateway .
 pnpm infra:up
 # as in Kubernetes: read-only root filesystem, no capabilities, uid 10001
 docker run --rm --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-  --user 10001:10001 --network nest-starter_default -p 4000:3000 -p 9464:9464 \
-  -e DATABASE_URL=postgres://app:app@postgres:5432/app nest-starter
+  --user 10001:10001 --network llm-gateway_default -p 4000:3000 -p 9464:9464 \
+  -e DATABASE_URL=postgres://app:app@postgres:5432/app llm-gateway
 # migrations from the same image
-docker run --rm --read-only --tmpfs /tmp --user 10001:10001 --network nest-starter_default \
-  -e DATABASE_URL=postgres://app:app@postgres:5432/app nest-starter node dist/db/migrate.js
+docker run --rm --read-only --tmpfs /tmp --user 10001:10001 --network llm-gateway_default \
+  -e DATABASE_URL=postgres://app:app@postgres:5432/app llm-gateway node dist/db/migrate.js
 ```
 
 - Base `node:26.13.0-trixie-slim`. Stages: `deps` (pnpm from `packageManager`) → `build` (`dist/`) and `prod-deps` (`node_modules` without dev dependencies) → `runtime`.
@@ -129,7 +157,7 @@ docker run --rm --read-only --tmpfs /tmp --user 10001:10001 --network nest-start
 
 `.github/workflows/ci.yml` calls the org reusable workflows from `nick-lukashik/.github` by the moving major tag `@v1`, never `@master`:
 
-- job `ci`: `build.yml@v1` with `kind: api` and `services: postgres`. It starts a Postgres service container, exports it as `TEST_DATABASE_URL`, runs `pnpm verify` and builds the image with `APP_VERSION=<full SHA>`; on `master` it pushes the image to GHCR and outputs its digest. A change to docs only (`docs/`, `.claude/`, `*.md` at the root) skips all of it. The required check is `ci / verify`. `publish` is off while the repository is a template.
+- job `ci`: `build.yml@v1` with `kind: api` and `services: postgres`. It starts a Postgres service container, exports it as `TEST_DATABASE_URL`, runs `pnpm verify` and builds the image with `APP_VERSION=<full SHA>`; on `master` it pushes the image to GHCR and outputs its digest. A change to docs only (`docs/`, `.claude/`, `*.md` at the root) skips all of it. The required check is `ci / verify`. `publish` is on: this repository is not a template.
 - job `deploy`: on `master`, when an image was pushed: `deploy-pr.yml@v1` opens the gitops PR with the new digest. Secrets are passed explicitly, never `secrets: inherit`.
 
 `test/global-setup.ts` uses `TEST_DATABASE_URL` when it is set, else starts Postgres in Testcontainers. Plain `DATABASE_URL` is never used, because the tests truncate tables.

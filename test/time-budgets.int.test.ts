@@ -1,7 +1,7 @@
 import type { ConfigType } from '@nestjs/config'
 import { sql } from 'drizzle-orm'
 import pg from 'pg'
-import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
 import { databaseFailure, PG_POOL } from '../src/common/database/database.js'
 import { dbConfig } from '../src/config/config.js'
 import { startApp, type TestApp } from './harness.js'
@@ -11,7 +11,7 @@ const elapsedSince = (started: number) => performance.now() - started
 describe('Postgres time budgets', () => {
     let t: TestApp
     let pool: pg.Pool
-    let noteId: string
+    let jobId: string
     const holder = () =>
         new pg.Client({
             connectionString: inject('databaseUrl'),
@@ -20,10 +20,30 @@ describe('Postgres time budgets', () => {
     beforeAll(async () => {
         t = await startApp()
         pool = t.app.get<pg.Pool>(PG_POOL)
-        const created = await t.http().post('/api/v1/notes').send({
-            title: 'locked',
-        })
-        noteId = created.body.id
+        const created = await t
+            .api()
+            .post('/api/v1/jobs')
+            .send({
+                model: 'claude-haiku-5-5',
+                messages: [
+                    {
+                        role: 'user',
+                        content: 'locked',
+                    },
+                ],
+            })
+        jobId = created.body.id
+        // Let the runner finish it, so it does not touch the row during the lock tests.
+        await vi.waitFor(
+            async () => {
+                const job = await t.api().get(`/api/v1/jobs/${jobId}`)
+                if (job.body.status !== 'succeeded' && job.body.status !== 'failed') throw new Error('job not finished')
+            },
+            {
+                timeout: 10_000,
+                interval: 100,
+            },
+        )
     })
     afterAll(async () => {
         await t?.close()
@@ -48,9 +68,9 @@ describe('Postgres time budgets', () => {
         try {
             // What a migration's ALTER TABLE holds: even plain reads wait for it.
             await migration.query('begin')
-            await migration.query('lock table notes in access exclusive mode')
+            await migration.query('lock table llm_jobs in access exclusive mode')
             const started = performance.now()
-            const res = await t.http().get(`/api/v1/notes/${noteId}`)
+            const res = await t.api().get(`/api/v1/jobs/${jobId}`)
             const elapsed = elapsedSince(started)
             expect(res.status).toBe(503)
             expect(res.body).toEqual({
@@ -69,7 +89,7 @@ describe('Postgres time budgets', () => {
                 reason: 'lock_timeout',
             }),
         ).toBeGreaterThanOrEqual(1)
-        const again = await t.http().get(`/api/v1/notes/${noteId}`)
+        const again = await t.api().get(`/api/v1/jobs/${jobId}`)
         expect(again.status).toBe(200)
         expect(pool.waitingCount).toBe(0)
     })
@@ -79,11 +99,11 @@ describe('Postgres time budgets', () => {
         await other.connect()
         try {
             await other.query('begin')
-            await other.query('select id from notes where id = $1 for update', [
-                noteId,
+            await other.query('select id from llm_jobs where id = $1 for update', [
+                jobId,
             ])
             const started = performance.now()
-            const failure = await t.db.execute(sql`update notes set title = 'changed' where id = ${noteId}`).then(
+            const failure = await t.db.execute(sql`update llm_jobs set purpose = 'changed' where id = ${jobId}`).then(
                 () => undefined,
                 (error: unknown) => databaseFailure(error),
             )
@@ -96,7 +116,9 @@ describe('Postgres time budgets', () => {
             await other.end()
         }
         // The connection went back to the pool in a usable state.
-        await expect(t.db.execute(sql`update notes set title = 'changed' where id = ${noteId}`)).resolves.toBeDefined()
+        await expect(
+            t.db.execute(sql`update llm_jobs set purpose = 'changed' where id = ${jobId}`),
+        ).resolves.toBeDefined()
     })
 
     it('answers 503 within about 2 s when no pool connection is free, then recovers', async () => {
@@ -111,7 +133,7 @@ describe('Postgres time budgets', () => {
         )
         try {
             const started = performance.now()
-            const res = await t.http().get(`/api/v1/notes/${noteId}`)
+            const res = await t.api().get(`/api/v1/jobs/${jobId}`)
             const elapsed = elapsedSince(started)
             expect(res.status).toBe(503)
             expect(res.body.message).toBe('Database is busy, retry later')
@@ -120,7 +142,7 @@ describe('Postgres time budgets', () => {
         } finally {
             for (const client of held) client.release()
         }
-        const again = await t.http().get(`/api/v1/notes/${noteId}`)
+        const again = await t.api().get(`/api/v1/jobs/${jobId}`)
         expect(again.status).toBe(200)
         expect(pool.totalCount).toBeLessThanOrEqual(max)
     })

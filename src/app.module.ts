@@ -7,7 +7,7 @@ import { MetricsModule } from './common/metrics/metrics.module.js'
 import { appConfig, dbConfig } from './config/config.js'
 import { AppConfigModule } from './config/config.module.js'
 import * as schema from './db/schema.js'
-import { NotesModule } from './notes/notes.module.js'
+import { GatewayModule } from './gateway/gateway.module.js'
 
 type App = ConfigType<typeof appConfig>
 
@@ -59,7 +59,7 @@ type App = ConfigType<typeof appConfig>
                 applicationName: app.service,
             }),
         }),
-        NotesModule,
+        GatewayModule,
     ],
 })
 export class AppModule {}
