@@ -604,9 +604,9 @@ function safeResolve(root: JsonSchema, ref: string): JsonSchema | undefined {
     }
 }
 
-/* ---------- Claude Code and MiniMax ---------- */
+/* ---------- Claude Code and HTTP providers ---------- */
 
-/** The schema without `$schema` (tool input schemas, MiniMax). */
+/** The schema without `$schema` (tool input schemas). */
 export function withoutMeta(schema: SchemaObject): SchemaObject {
     const strip = (node: unknown): unknown =>
         Array.isArray(node)

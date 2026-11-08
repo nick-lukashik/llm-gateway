@@ -4,7 +4,6 @@ import { z } from 'zod'
 export const providerIds = [
     'codex',
     'claude',
-    'minimax',
 ] as const
 export const providerIdSchema = z.enum(providerIds)
 export type ProviderId = z.infer<typeof providerIdSchema>
@@ -42,9 +41,6 @@ const modelSchema = z.strictObject({
     model: z.string().min(1).max(100),
     efforts: z.array(effortSchema).min(1),
     defaultEffort: effortSchema,
-    /** MiniMax: extended thinking (the tool is then asked for in the prompt). */
-    thinking: z.boolean().optional(),
-    temperature: z.number().min(0).max(2).optional(),
 })
 export type CatalogModel = z.infer<typeof modelSchema>
 
@@ -110,8 +106,6 @@ export type Profile = {
     provider: ProviderId
     model: string
     reasoningEffort: Effort
-    thinking?: boolean
-    temperature?: number
 }
 
 export function profileOf(model: CatalogModel, effort: Effort): Profile {
@@ -121,15 +115,5 @@ export function profileOf(model: CatalogModel, effort: Effort): Profile {
         provider: model.provider,
         model: model.model,
         reasoningEffort: effort,
-        ...(model.thinking === undefined
-            ? {}
-            : {
-                  thinking: model.thinking,
-              }),
-        ...(model.temperature === undefined
-            ? {}
-            : {
-                  temperature: model.temperature,
-              }),
     }
 }

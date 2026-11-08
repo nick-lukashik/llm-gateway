@@ -32,7 +32,6 @@ export const gatewayConfig = registerAs('gateway', () => ({
     codexHome: env().CODEX_HOME ?? join(homedir(), '.codex'),
     claudeCommand: env().CLAUDE_COMMAND,
     claudeToken: env().CLAUDE_CODE_OAUTH_TOKEN,
-    minimaxKey: env().MINIMAX_API_KEY,
     quotaPauseSeconds: env().LLM_QUOTA_PAUSE_SECONDS,
     queueTimeoutMs: env().LLM_QUEUE_TIMEOUT_MS,
     retentionDays: env().LLM_LOG_RETENTION_DAYS,

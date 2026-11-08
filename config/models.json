@@ -1,12 +1,12 @@
 {
     "providers": {
-        "codex": { "concurrency": 3, "timeoutMs": 900000 },
-        "claude": { "concurrency": 3, "timeoutMs": 900000 },
-        "minimax": {
+        "codex": {
             "concurrency": 3,
-            "timeoutMs": 600000,
-            "baseUrl": "https://api.minimax.io/anthropic",
-            "overloadRetryMs": [5000, 15000, 30000]
+            "timeoutMs": 900000
+        },
+        "claude": {
+            "concurrency": 3,
+            "timeoutMs": 900000
         }
     },
     "models": [
@@ -105,15 +105,6 @@
             "model": "claude-haiku-5-5",
             "efforts": ["low", "medium", "high", "xhigh", "max"],
             "defaultEffort": "medium"
-        },
-        {
-            "id": "minimax-m3.1-flash",
-            "label": "MiniMax · M3.1 Flash",
-            "provider": "minimax",
-            "model": "MiniMax-M3.1-Flash",
-            "efforts": ["low", "medium", "high"],
-            "defaultEffort": "low",
-            "thinking": true
         }
     ]
 }

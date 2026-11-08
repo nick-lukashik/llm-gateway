@@ -4,7 +4,6 @@ import { type GatewayConfig, gatewayConfig } from '../config/config.js'
 import { loadCatalog } from '../domain/models.js'
 import { ClaudeProvider } from '../providers/claude.provider.js'
 import { CodexProvider } from '../providers/codex.provider.js'
-import { MinimaxProvider } from '../providers/minimax.provider.js'
 import { LLM_PROVIDERS } from '../providers/provider.js'
 import { ChatService } from './chat.service.js'
 import { AdminGuard, ClientKeyGuard } from './clients.js'
@@ -42,9 +41,6 @@ export const defaultCatalogPath = fileURLToPath(new URL('../../config/models.jso
                 new ClaudeProvider({
                     command: config.claudeCommand,
                     oauthToken: config.claudeToken,
-                }),
-                new MinimaxProvider({
-                    apiKey: config.minimaxKey,
                 }),
             ],
         },
