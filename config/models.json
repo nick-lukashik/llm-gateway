@@ -1,0 +1,119 @@
+{
+    "providers": {
+        "codex": { "concurrency": 3, "timeoutMs": 900000 },
+        "claude": { "concurrency": 3, "timeoutMs": 900000 },
+        "minimax": {
+            "concurrency": 3,
+            "timeoutMs": 600000,
+            "baseUrl": "https://api.minimax.io/anthropic",
+            "overloadRetryMs": [5000, 15000, 30000]
+        }
+    },
+    "models": [
+        {
+            "id": "gpt-6.1-sol",
+            "label": "Codex · GPT-6.1 Sol",
+            "provider": "codex",
+            "model": "gpt-6.1-sol",
+            "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+            "defaultEffort": "low"
+        },
+        {
+            "id": "gpt-6.1-terra",
+            "label": "Codex · GPT-6.1 Terra",
+            "provider": "codex",
+            "model": "gpt-6.1-terra",
+            "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+            "defaultEffort": "low"
+        },
+        {
+            "id": "gpt-6-astra",
+            "label": "Codex · GPT-6 Astra",
+            "provider": "codex",
+            "model": "gpt-6-astra",
+            "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+            "defaultEffort": "low"
+        },
+        {
+            "id": "gpt-6-sol",
+            "label": "Codex · GPT-6 Sol",
+            "provider": "codex",
+            "model": "gpt-6-sol",
+            "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+            "defaultEffort": "medium"
+        },
+        {
+            "id": "gpt-6-luna",
+            "label": "Codex · GPT-6 Luna",
+            "provider": "codex",
+            "model": "gpt-6-luna",
+            "efforts": ["low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "medium"
+        },
+        {
+            "id": "gpt-5.6-sol",
+            "label": "Codex · GPT-5.6 Sol",
+            "provider": "codex",
+            "model": "gpt-5.6-sol",
+            "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+            "defaultEffort": "low"
+        },
+        {
+            "id": "gpt-5.6-terra",
+            "label": "Codex · GPT-5.6 Terra",
+            "provider": "codex",
+            "model": "gpt-5.6-terra",
+            "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+            "defaultEffort": "medium"
+        },
+        {
+            "id": "gpt-5.6-luna",
+            "label": "Codex · GPT-5.6 Luna",
+            "provider": "codex",
+            "model": "gpt-5.6-luna",
+            "efforts": ["low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "medium"
+        },
+        {
+            "id": "claude-fable-5-1",
+            "label": "Claude · Fable 5.1",
+            "provider": "claude",
+            "model": "claude-fable-5-1",
+            "efforts": ["low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "medium"
+        },
+        {
+            "id": "claude-opus-5-5",
+            "label": "Claude · Opus 5.5",
+            "provider": "claude",
+            "model": "claude-opus-5-5",
+            "efforts": ["low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "medium"
+        },
+        {
+            "id": "claude-sonnet-5-5",
+            "label": "Claude · Sonnet 5.5",
+            "provider": "claude",
+            "model": "claude-sonnet-5-5",
+            "efforts": ["low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "low"
+        },
+        {
+            "id": "claude-haiku-5-5",
+            "label": "Claude · Haiku 5.5",
+            "provider": "claude",
+            "model": "claude-haiku-5-5",
+            "efforts": ["low", "medium", "high", "xhigh", "max"],
+            "defaultEffort": "medium"
+        },
+        {
+            "id": "minimax-m3.1-flash",
+            "label": "MiniMax · M3.1 Flash",
+            "provider": "minimax",
+            "model": "MiniMax-M3.1-Flash",
+            "efforts": ["low", "medium", "high"],
+            "defaultEffort": "low",
+            "thinking": true
+        }
+    ]
+}

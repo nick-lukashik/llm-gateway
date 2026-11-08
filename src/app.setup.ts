@@ -4,15 +4,25 @@ import type { ConfigType } from '@nestjs/config'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import { ErrorFilter } from './common/http/error.filter.js'
 import { requestContext } from './common/http/request-id.js'
-import { REQUEST_TIMEOUT_MS, RequestTimeoutInterceptor } from './common/http/request-timeout.js'
+import { RequestTimeoutInterceptor } from './common/http/request-timeout.js'
 import { validationException } from './common/http/validation.js'
 import { HttpMetrics } from './common/metrics/http-metrics.js'
 import { Metrics } from './common/metrics/metrics.js'
 import { setupOpenApi } from './common/openapi/openapi.js'
 import { appConfig } from './config/config.js'
 
-/** Largest request body (JSON or form) the parsers accept; larger is a 413 (service contract). */
-export const BODY_LIMIT = '1mb'
+/**
+ * Largest request body the parsers accept; larger is a 413. Above the 1 MiB
+ * of the service contract: prompts reach 600 000 characters, and the gateway
+ * has no public route (components/internal).
+ */
+export const BODY_LIMIT = '8mb'
+
+/**
+ * Whole-request budget: a model call takes minutes, so the gateway is an
+ * exception to the contract's 10 s (D-104). Longer work goes to /api/v1/jobs.
+ */
+export const GATEWAY_REQUEST_TIMEOUT_MS = 16 * 60_000
 
 /**
  * HTTP setup shared by main.ts and the integration tests: security headers,
@@ -66,7 +76,7 @@ export function configureApp(app: NestExpressApplication) {
         name: 'http_server_request_timeouts_total',
         help: 'Requests answered 504 because they exceeded the whole-request budget.',
     })
-    app.useGlobalInterceptors(new RequestTimeoutInterceptor(REQUEST_TIMEOUT_MS, () => timeouts.inc()))
+    app.useGlobalInterceptors(new RequestTimeoutInterceptor(GATEWAY_REQUEST_TIMEOUT_MS, () => timeouts.inc()))
     app.setGlobalPrefix('api', {
         exclude: [
             'health/live',

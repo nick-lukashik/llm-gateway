@@ -1,8 +1,8 @@
 {
-    "name": "nest-starter",
+    "name": "llm-gateway",
     "version": "0.1.0",
     "private": true,
-    "description": "NestJS service starter: HTTP, config, logs, health, metrics, Postgres + Drizzle",
+    "description": "Model gateway for every service: OpenAI-compatible API over model subscriptions",
     "type": "module",
     "packageManager": "pnpm@12.16.1",
     "engines": {
@@ -28,6 +28,7 @@
         "infra:up": "docker compose up -d --wait",
         "infra:down": "docker compose down",
         "infra:reset": "docker compose down --volumes",
+        "client:key": "node scripts/client-key.mjs",
         "env:local": "node -e \"fs.existsSync('.env')?console.log('.env already exists'):(fs.copyFileSync('.env.example','.env'),console.log('created .env from .env.example'))\""
     },
     "dependencies": {

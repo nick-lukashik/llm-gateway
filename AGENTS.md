@@ -1,6 +1,6 @@
 # AGENTS.md
 
-NestJS service template: HTTP, config, logs, health, metrics and PostgreSQL (Drizzle), with a sample `notes` module. Redis, RabbitMQ (events through outbox/inbox) and pg-boss (jobs) are added only when the service uses them, copied from `nest-example` ("Add a capability" in `README.md`). The human-facing description is `README.md`.
+The model gateway of the platform, created from `nest-starter`: every service calls models only through it. An OpenAI-compatible API (`/api/v1/chat/completions`, `/api/v1/models`) plus jobs for long calls, over the owner's subscriptions: Codex CLI, Claude Code CLI, MiniMax HTTP. One replica with the Codex login volume (an exception to the contract). Postgres keeps the call journal with texts (14 days), provider pauses and jobs. Redis, RabbitMQ (events through outbox/inbox) and pg-boss (jobs) are added only when the service uses them, copied from `nest-example` ("Add a capability" in `README.md`). The human-facing description is `README.md`.
 
 ## Commands
 
@@ -18,7 +18,11 @@ NestJS service template: HTTP, config, logs, health, metrics and PostgreSQL (Dri
 - `src/config/`: the Zod env schema (`env.ts`) and the `registerAs` groups (`config.ts`). Nothing else reads `process.env`.
 - `src/common/`: infrastructure without business logic, identical to `nest-example` and ready to move into a package: `http` (errors, request id, cursors, validation), `database`, `health`, `metrics`, `logging`, `openapi`, `context` (AsyncLocalStorage). Change it in `nest-example` first, then copy it here.
 - `src/db/`: Drizzle schema, types, `migrate.ts` (Argo CD Sync-hook Job before the Deployment: `node dist/db/migrate.js`).
-- `src/notes/`: the sample feature: schemas → repository → service → controller. Replace it with the service's own.
+- `src/domain/`: provider-independent logic ported from the old gateway: `json-schema.ts` (schema checks, Codex strict mode, draft 7), `coerce.ts`, `failures.ts` (error codes and the text classifier), `pause.ts` (reset time from limit messages), `semaphore.ts`, `models.ts` (the catalog `config/models.json`).
+- `src/providers/`: Codex and Claude as CLI runs (`run-cli.ts`, an env allowlist in `provider.ts`), MiniMax over HTTP. A new CLI version can change the output they parse: pin it in the Dockerfile and check with a live call.
+- `src/gateway/`: the API (`gateway.controller.ts`, OpenAI shapes in `openai.ts`), client keys (`clients.ts`), the call path with slots, pauses and the journal (`gateway.service.ts`), jobs and the purge (`jobs.service.ts`), SQL (`gateway.repository.ts`).
+- `config/models.json`: models and efforts the CLIs offer; no secrets.
+- `scripts/client-key.mjs`: a new client key (stdout) and its `LLM_CLIENTS` entry (stderr).
 - `drizzle/`: SQL migrations and `meta/` (generated, never edited by hand).
 - `test/`: integration tests and the harness; unit tests sit next to the code (`*.test.ts`).
 - `Dockerfile`, `.github/workflows/ci.yml`: the image and CI follow the [service runtime contract](https://github.com/nick-lukashik/.github/blob/master/docs/service-contract.md) (kind **api**); see "Deploy" in `README.md`.
@@ -29,8 +33,8 @@ NestJS service template: HTTP, config, logs, health, metrics and PostgreSQL (Dri
 - ESM: relative imports end in `.js`. Injectable classes are imported as values, not `import type` (DI reads `emitDecoratorMetadata`). Non-classes go through a `Symbol` token (`DB`, `PG_POOL`).
 - Controllers are thin: the schema on the parameter (`@Body({ schema })`, `@Query({ schema })`), a service call. SQL lives only in `*.repository.ts`.
 - The contract is described by Zod schemas in `<feature>.schemas.ts` with `.meta({ id })`; OpenAPI (`/openapi.json`) is built from them. Responses through `@ApiOkResponse({ standardSchema })`, errors through `@ApiErrors(...)`.
-- Errors: `throw new AppError(code, message, details?)` or `notFound("Note")`. Codes: `VALIDATION_FAILED` 400, `NOT_FOUND` 404, `PAYLOAD_TOO_LARGE` 413, `RATE_LIMITED` 429 (once a rate limit is added), `INTERNAL` 500, `UNAVAILABLE` 503 (Postgres over a time budget or down: `ErrorFilter` maps it by SQLSTATE), `TIMEOUT` 504 (the 10 s request budget). Only `ErrorFilter` builds the response body; stacks, SQL and internal messages never leave the service.
-- Time budgets (service contract): request 10 s, SQL statement 5 s, lock 2 s, idle in transaction 10 s, pool wait 2 s, migration lock wait 1 s (retried), body 1 MiB. They are set once (`DATABASE_TIMEOUTS`, `REQUEST_TIMEOUT_MS`, `BODY_LIMIT`); work that needs more goes to a job (pg-boss, see nest-example), not a longer budget.
+- Errors: `throw new AppError(code, message, details?)` or `notFound("Job")`. Codes: `VALIDATION_FAILED` 400, `NOT_FOUND` 404, `PAYLOAD_TOO_LARGE` 413, `RATE_LIMITED` 429 (once a rate limit is added), `INTERNAL` 500, `UNAVAILABLE` 503 (Postgres over a time budget or down: `ErrorFilter` maps it by SQLSTATE), `TIMEOUT` 504 (the 10 s request budget). Only `ErrorFilter` builds the response body; stacks, SQL and internal messages never leave the service.
+- Time budgets (service contract), with the gateway's exceptions: the whole request 16 min (`GATEWAY_REQUEST_TIMEOUT_MS`, D-104), body 8 MiB (internal only); otherwise request 10 s, SQL statement 5 s, lock 2 s, idle in transaction 10 s, pool wait 2 s, migration lock wait 1 s (retried), body 1 MiB. They are set once (`DATABASE_TIMEOUTS`, `REQUEST_TIMEOUT_MS`, `BODY_LIMIT`); work that needs more goes to a job (pg-boss, see nest-example), not a longer budget.
 - Degradation: readiness requires Postgres only. A dependency added later registers a check with `health.register(name, check, { required })`; a degradable one (Redis, RabbitMQ) uses `required: false`, is reported as `degraded`, never blocks startup, and has a metric for its degraded state.
 - Migrations: compatible with the code that is running (add → switch → remove, over separate releases), forward only, no long-locking DDL mixed into a feature migration, backfills as batched jobs ("Migrations" in `README.md`).
 - A new environment variable: `src/config/env.ts` → a group in `src/config/config.ts` → `.env.example`. Secrets have no `.default()`.
