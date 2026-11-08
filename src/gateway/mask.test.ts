@@ -28,3 +28,24 @@ describe('maskSecrets', () => {
         expect(maskSecrets(text)).toBe(text)
     })
 })
+
+describe('maskSecrets on hostile input', () => {
+    it('stays fast on many BEGIN markers without an END', () => {
+        const text = '-----BEGIN PRIVATE KEY-----'.repeat(50_000)
+        const started = performance.now()
+        expect(maskSecrets(text)).toBe(text)
+        expect(performance.now() - started).toBeLessThan(500)
+    })
+
+    it('stays fast on many BEGIN markers of other blocks', () => {
+        const text = '-----BEGIN CERTIFICATE-----'.repeat(50_000)
+        const started = performance.now()
+        expect(maskSecrets(text)).toBe(text)
+        expect(performance.now() - started).toBeLessThan(500)
+    })
+
+    it('masks two key blocks and keeps the text between them', () => {
+        const key = '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----'
+        expect(maskSecrets(`a ${key} b ${key} c`)).toBe(`a ${MASK} b ${MASK} c`)
+    })
+})

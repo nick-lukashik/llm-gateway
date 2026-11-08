@@ -90,10 +90,25 @@ export function resolveRef(root: JsonSchema, ref: string): JsonSchema {
     return node
 }
 
+/**
+ * `pattern` comes from the client's schema. Clients are platform services
+ * with a key, but a pattern with catastrophic backtracking would still stall
+ * the process: only short patterns without nested quantifiers or
+ * backreferences are accepted, and values are tested up to a length.
+ */
+const MAX_PATTERN = 256
+export const MAX_PATTERN_INPUT = 10_000
+/** A quantified group that itself ends in a quantifier, `(a+)+` or `(\\w*)*`: the classic catastrophic shape. */
+const NESTED_QUANTIFIER = /\([^()]*[+*?]\)\s*[+*{]/
+const BACKREFERENCE = /\\[1-9]|\\k</
+
 const patterns = new Map<string, RegExp>()
 function compilePattern(source: string): RegExp {
     let compiled = patterns.get(source)
     if (compiled) return compiled
+    if (source.length > MAX_PATTERN) throw new SchemaError(`pattern longer than ${MAX_PATTERN} characters`)
+    if (NESTED_QUANTIFIER.test(source) || BACKREFERENCE.test(source))
+        throw new SchemaError(`pattern ${source.slice(0, 100)} has nested quantifiers or backreferences`)
     try {
         compiled = new RegExp(source, 'u')
     } catch {
@@ -239,7 +254,10 @@ function checkString(value: string, schema: SchemaObject, path: string, errors: 
         errors.push(`${at(path)}: at least ${schema.minLength} characters, got ${value.length}`)
     if (typeof schema.maxLength === 'number' && value.length > schema.maxLength)
         errors.push(`${at(path)}: at most ${schema.maxLength} characters, got ${value.length}`)
-    if (typeof schema.pattern === 'string' && !compilePattern(schema.pattern).test(value))
+    if (
+        typeof schema.pattern === 'string'
+        && (value.length > MAX_PATTERN_INPUT || !compilePattern(schema.pattern).test(value))
+    )
         errors.push(`${at(path)}: does not match the pattern ${schema.pattern.slice(0, 120)}`)
 }
 

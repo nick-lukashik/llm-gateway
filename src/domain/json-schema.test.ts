@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import {
     assertSupportedSchema,
+    MAX_PATTERN_INPUT,
     normalizeSchemaForCodex,
     restoreFromCodex,
     SchemaError,
@@ -196,6 +197,31 @@ describe('validateJson', () => {
         ).toThrow(SchemaError)
         expect(() => assertSupportedSchema([])).toThrow(SchemaError)
         expect(() => assertSupportedSchema(cvSchema)).not.toThrow()
+    })
+
+    it.each([
+        '(a+)+$',
+        '(\\w*)*x',
+        '(a|b)\\1',
+        'x'.repeat(257),
+    ])('refuses the risky pattern %s', pattern => {
+        expect(() =>
+            assertSupportedSchema({
+                type: 'string',
+                pattern,
+            }),
+        ).toThrow(SchemaError)
+    })
+
+    it('fails a value longer than the pattern input limit instead of testing it', () => {
+        expect(
+            validateJson('a'.repeat(MAX_PATTERN_INPUT + 1), {
+                type: 'string',
+                pattern: '^a+$',
+            }),
+        ).toEqual([
+            expect.stringMatching(/does not match the pattern/),
+        ])
     })
 })
 
