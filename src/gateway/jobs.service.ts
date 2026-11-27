@@ -79,6 +79,7 @@ export class JobsService implements OnModuleInit, OnApplicationBootstrap {
             CALL_QUEUE,
             {
                 localConcurrency: this.config.jobConcurrency,
+                pollingIntervalSeconds: 1,
             },
             async ([job]: Job<JobData>[]) => {
                 if (job) await this.run(job)

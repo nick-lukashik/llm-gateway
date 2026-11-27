@@ -18,6 +18,7 @@ Subscriptions are for personal use: calls for other people need paid keys.
 | Zod                              | 4.6           | one schema for validation and OpenAPI; no class-validator or nestjs-zod                   |
 | @nestjs/swagger                  | 12.1          | understands Standard JSON Schema from Zod                                                 |
 | Drizzle ORM / drizzle-kit        | 0.45 / 0.31   | SQL migrations, typed queries; driver `pg` 8.23                                           |
+| pg-boss                          | 12.39         | jobs in Postgres (schema `pgboss`), copied from nest-example                              |
 | PostgreSQL                       | 18.6          | `uuidv7()` built in                                                                       |
 | pino / nestjs-pino               | 10.4 / 5.3    | JSON logs with `requestId`                                                                |
 | @prometheus-io/client            | 0.16          | prom-client, moved to the Prometheus organization                                         |
@@ -57,27 +58,31 @@ Base URL for OpenAI SDKs: `http://llm-gateway.prod.svc/api/v1` with the client's
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `POST /api/v1/chat/completions`         | OpenAI chat completion. `model` from `/models`, `reasoning_effort` among the model's efforts (default: the model's), `response_format` `text` or `json_schema` (`json_object` and `stream` are refused), `metadata.purpose` names the call in the journal. `Idempotency-Key` returns the stored answer of a successful call for 24 h. Up to 16 minutes |
 | `GET /api/v1/models`                    | the models this key may call, with `efforts` and `default_effort`                                                                                                                                                                                                                                                                                      |
-| `POST /api/v1/jobs`                     | the same body; 202 with a job id at once, the call runs in the background                                                                                                                                                                                                                                                                              |
+| `POST /api/v1/jobs`                     | the same body; 202 with a job id at once, the call runs in the background (pg-boss, see "Jobs")                                                                                                                                                                                                                                                        |
 | `GET /api/v1/jobs/:id`                  | `queued`, `running`, `succeeded` (with `result`, a chat completion) or `failed` (with `error`); only the client that queued it                                                                                                                                                                                                                         |
 | `GET /api/v1/providers`                 | admin keys: each provider's availability, pause, slots                                                                                                                                                                                                                                                                                                 |
 | `DELETE /api/v1/providers/:id/pause`    | admin keys: lift a pause by hand                                                                                                                                                                                                                                                                                                                       |
+| `GET /api/v1/admin/usage`               | admin keys: calls, errors, tokens and seconds from the daily rollup over a UTC day range (`from`, `to`, default the last 30 days, at most 366), filters `client`, `purpose`, `provider`, `model`, `group_by` any of `day,client,purpose,provider,model` (default `day`, empty: one total)                                                              |
+| `GET /api/v1/admin/clients`             | admin keys: each client of `LLM_CLIENTS` (no hashes) with its `dailyTokens` and the tokens it used since 00:00 UTC                                                                                                                                                                                                                                     |
 | `GET /health/live`, `GET /health/ready` | ready: 503 without Postgres                                                                                                                                                                                                                                                                                                                            |
 | `GET /openapi.json`, `GET /docs`        | OpenAPI                                                                                                                                                                                                                                                                                                                                                |
 
-Errors of the model routes have the OpenAI shape `{ error: { message, type, code, param, retryable, resets_at } }`, with `code`: `bad_request` 400, `invalid_api_key` 401, `permission_denied` 403, `invalid_output` 422 (the answer missed the schema after a correction), `provider_quota` 429 (paused until `resets_at`, also in `Retry-After`), `provider_unavailable` 503 (`retryable: false` for a lost login), `provider_timeout` 504. Validation and database errors keep the service contract body.
+Errors of the model routes have the OpenAI shape `{ error: { message, type, code, param, retryable, resets_at } }`, with `code`: `bad_request` 400, `invalid_api_key` 401, `permission_denied` 403, `invalid_output` 422 (the answer missed the schema after a correction), `provider_quota` 429 (paused until `resets_at`, also in `Retry-After`), `budget_exceeded` 429 (the key's daily token limit, until 00:00 UTC in `resets_at` and `Retry-After`; not a provider pause), `provider_unavailable` 503 (`retryable: false` for a lost login), `provider_timeout` 504. Validation and database errors keep the service contract body.
 
 Text answers go through a one-field schema internally (`{ content }`), so every provider answers the same way.
 
 ## Clients
 
-`LLM_CLIENTS` lists the clients: name, SHA-256 of the key, allowed models (`*` for all), `admin`. The hashes are not secrets (ConfigMap); the key goes into the client's sealed secrets:
+`LLM_CLIENTS` lists the clients: name, SHA-256 of the key, allowed models (`*` for all), `admin`, and optionally `dailyTokens`. The hashes are not secrets (ConfigMap); the key goes into the client's sealed secrets:
 
 ```sh
 node scripts/client-key.mjs tailor-api '*' 2>/dev/null | kubectl create secret generic ...   # the key, never printed
 node scripts/client-key.mjs tailor-api '*' >/dev/null                                       # the entry
 ```
 
-Run it once per client and use both outputs of the same run.
+Run it once per client and use both outputs of the same run. Flags: `--admin`, `--daily-tokens N`.
+
+`dailyTokens`: input plus output tokens of the client's calls per UTC day, counted from the journal (every outcome, correction rounds included). Absent: unlimited. A call or a job submission when the client is at or over it gets 429 `budget_exceeded` until 00:00 UTC; a job that starts later is checked again and fails with the same code. The check is made before each call, so calls already running can pass the limit by their own tokens.
 
 ## Models
 
@@ -90,13 +95,29 @@ Run it once per client and use both outputs of the same run.
 
 A provider without its login answers 503 with the reason; `GET /api/v1/providers` shows it.
 
-## Journal
+## Journal and usage
 
-`llm_calls`: client, purpose, model, effort, provider, account, tokens, time, outcome, the request messages with secrets masked and the answer. Calls and finished jobs older than `LLM_LOG_RETENTION_DAYS` (14) are deleted every 6 hours. Logs carry ids and numbers, never the texts.
+`llm_calls`: client, purpose, model, effort, provider, account, tokens, time, outcome, the request messages with secrets masked and the answer. Logs carry ids and numbers, never the texts.
+
+`llm_usage_daily` (D-168, D-177): per UTC day, client, purpose, provider and model the calls, errors (outcome not `ok`), input and output tokens and total seconds; no texts. Kept without the retention.
+
+The maintenance job (pg-boss queue `llm.maintenance`, every 10 minutes and at startup, one at a time) first recomputes the rollup of the last `LLM_LOG_RETENTION_DAYS` UTC days from the journal and upserts it (idempotent: a repeat changes nothing), then deletes calls and finished jobs older than `LLM_LOG_RETENTION_DAYS` (14). A day leaves the recomputed range while the journal still holds it in full, so its rollup row stays final. Today's numbers in `/admin/usage` lag by up to 10 minutes; the limit and `/admin/clients` read the journal directly.
+
+## Jobs
+
+`POST /api/v1/jobs` writes the `llm_jobs` row (what `GET /api/v1/jobs/:id` reads) and a pg-boss job in queue `llm.call` with the same id in one transaction. Up to `LLM_JOB_CONCURRENCY` (4) run at once, each still waiting for its provider slot, so jobs survive a restart:
+
+- a shutdown: pg-boss waits 10 s, then fails the running jobs and aborts their calls; the row goes back to `queued` and the next process retries it (`attempts` counts the starts);
+- a killed pod: the job misses its 30 s heartbeat and pg-boss retries it;
+- 3 starts cut off: pg-boss moves it to `llm.call.dead` and the row fails with `provider_unavailable`, `retryable: true`;
+- a start cut off after the call succeeded takes the answer from the journal, not a second call;
+- a model failure (schema, quota, timeout, limit) is the job's outcome, not retried.
+
+Unfinished rows without a pg-boss job (left by the release before pg-boss) are queued at startup. `llm_gateway_jobs_total{result}` counts succeeded, failed, interrupted and dead runs.
 
 ## Add a capability
 
-Each one is a copy from `nest-example`, wired in `app.module.ts`. Pick by need ("Which mechanism" in its README): a job for this service's own background work, an event to tell other services, a consumer to react to theirs. Do not add one "for later".
+Each one is a copy from `nest-example`, wired in `app.module.ts`. Jobs (pg-boss) are in already: the call jobs and the maintenance job. Pick by need ("Which mechanism" in its README): a job for this service's own background work, an event to tell other services, a consumer to react to theirs. Do not add one "for later".
 
 | Capability                                  | Copy from nest-example                                                                                                                                                                                                       | Also                                                                                                                                                                                                           |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
