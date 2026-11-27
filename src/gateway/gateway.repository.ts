@@ -2,10 +2,15 @@ import { Inject, Injectable } from '@nestjs/common'
 import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm'
 import { DB } from '../common/database/database.js'
 import { llmCalls, llmJobs, providerPauses } from '../db/schema.js'
-import type { Db, NewCall } from '../db/types.js'
+import type { Db, NewCall, Tx } from '../db/types.js'
 
 /** How long an Idempotency-Key returns the stored answer. */
 export const IDEMPOTENCY_WINDOW_HOURS = 24
+
+const UNFINISHED = [
+    'queued',
+    'running',
+]
 
 /** SQL of the gateway: the call journal, provider pauses and jobs. */
 @Injectable()
@@ -68,17 +73,21 @@ export class GatewayRepository {
             .where(and(eq(providerPauses.provider, provider), eq(providerPauses.account, account)))
     }
 
-    async insertJob(client: string, request: unknown, purpose: string | null) {
-        const [row] = await this.db
-            .insert(llmJobs)
-            .values({
-                client,
-                request,
-                purpose,
-            })
-            .returning()
-        if (!row) throw new Error('insert into llm_jobs returned no row')
-        return row
+    /** Stores a queued job; `send` queues its pg-boss job in the same transaction: both or neither. */
+    createJob(client: string, request: unknown, purpose: string | null, send: (tx: Tx, id: string) => Promise<void>) {
+        return this.db.transaction(async tx => {
+            const [row] = await tx
+                .insert(llmJobs)
+                .values({
+                    client,
+                    request,
+                    purpose,
+                })
+                .returning()
+            if (!row) throw new Error('insert into llm_jobs returned no row')
+            await send(tx, row.id)
+            return row
+        })
     }
 
     async findJob(client: string, id: string) {
@@ -90,38 +99,36 @@ export class GatewayRepository {
         return row
     }
 
-    /** Takes up to `limit` queued jobs, oldest first, and marks them running. */
-    claimJobs(limit: number) {
-        return this.db.transaction(async tx => {
-            const queued = await tx
-                .select({
-                    id: llmJobs.id,
-                })
-                .from(llmJobs)
-                .where(eq(llmJobs.status, 'queued'))
-                .orderBy(asc(llmJobs.createdAt))
-                .limit(limit)
-                .for('update', {
-                    skipLocked: true,
-                })
-            if (queued.length === 0) return []
-            return tx
-                .update(llmJobs)
-                .set({
-                    status: 'running',
-                    startedAt: sql`now()`,
-                    attempts: sql`${llmJobs.attempts} + 1`,
-                })
-                .where(
-                    inArray(
-                        llmJobs.id,
-                        queued.map(job => job.id),
-                    ),
-                )
-                .returning()
-        })
+    /**
+     * Marks an unfinished job running and counts the start. A job left
+     * running by a stopped process is taken over: pg-boss runs one attempt
+     * of a job at a time. Undefined when the job is finished or gone.
+     */
+    async claimJob(id: string) {
+        const [row] = await this.db
+            .update(llmJobs)
+            .set({
+                status: 'running',
+                startedAt: sql`now()`,
+                attempts: sql`${llmJobs.attempts} + 1`,
+            })
+            .where(and(eq(llmJobs.id, id), inArray(llmJobs.status, UNFINISHED)))
+            .returning()
+        return row
     }
 
+    /** A start cut off by a shutdown: the job waits for its retry as queued. */
+    async requeueJob(id: string) {
+        await this.db
+            .update(llmJobs)
+            .set({
+                status: 'queued',
+                startedAt: null,
+            })
+            .where(and(eq(llmJobs.id, id), eq(llmJobs.status, 'running')))
+    }
+
+    /** Records the outcome once; a finished job stays as it is. True when this call finished it. */
     async finishJob(
         id: string,
         outcome:
@@ -132,7 +139,7 @@ export class GatewayRepository {
                   error: unknown
               },
     ) {
-        await this.db
+        const rows = await this.db
             .update(llmJobs)
             .set({
                 status: 'result' in outcome ? 'succeeded' : 'failed',
@@ -140,22 +147,36 @@ export class GatewayRepository {
                 error: 'error' in outcome ? outcome.error : null,
                 finishedAt: sql`now()`,
             })
-            .where(eq(llmJobs.id, id))
-    }
-
-    /** One replica (D-105): a job running at startup died with the old process and goes back to the queue. */
-    async requeueRunning() {
-        const rows = await this.db
-            .update(llmJobs)
-            .set({
-                status: 'queued',
-                startedAt: null,
-            })
-            .where(eq(llmJobs.status, 'running'))
+            .where(and(eq(llmJobs.id, id), inArray(llmJobs.status, UNFINISHED)))
             .returning({
                 id: llmJobs.id,
             })
-        return rows.length
+        return rows.length > 0
+    }
+
+    /** Unfinished jobs, oldest first: each must have a pg-boss job (the release before pg-boss left some without). */
+    unfinishedJobs(limit: number) {
+        return this.db
+            .select({
+                id: llmJobs.id,
+            })
+            .from(llmJobs)
+            .where(inArray(llmJobs.status, UNFINISHED))
+            .orderBy(asc(llmJobs.createdAt))
+            .limit(limit)
+    }
+
+    /** The answer of a successful call of this job: a start cut off after the call returns it instead of a new call. */
+    async answerForJob(jobId: string): Promise<unknown | undefined> {
+        const [row] = await this.db
+            .select({
+                response: llmCalls.response,
+            })
+            .from(llmCalls)
+            .where(and(eq(llmCalls.jobId, jobId), eq(llmCalls.outcome, 'ok')))
+            .orderBy(desc(llmCalls.createdAt))
+            .limit(1)
+        return row?.response ?? undefined
     }
 
     /** Deletes calls and finished jobs older than the retention, texts included. */

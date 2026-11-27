@@ -12,12 +12,17 @@ const command = (fallback: string) =>
 /** Optional text; an empty value (`KEY=` in .env) counts as unset. */
 const optionalText = z.preprocess(value => (value === '' ? undefined : value), z.string().min(1).optional())
 
-/** One client of the gateway: the SHA-256 of its key (not secret), the models it may call, admin routes. */
+/**
+ * One client of the gateway: the SHA-256 of its key (not secret), the models
+ * it may call, admin routes, and optionally its daily token limit (input plus
+ * output tokens per UTC day; absent: unlimited).
+ */
 export const clientSchema = z.strictObject({
     name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
     keySha256: z.string().regex(/^[0-9a-f]{64}$/),
     models: z.array(z.string().min(1)).min(1),
     admin: z.boolean().default(false),
+    dailyTokens: z.number().int().min(1).max(1_000_000_000).optional(),
 })
 export type ClientEntry = z.output<typeof clientSchema>
 

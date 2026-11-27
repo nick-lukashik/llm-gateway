@@ -56,6 +56,7 @@ export class ChatService {
                 journal: parsed.journal,
                 idempotencyKey: key,
                 jobId: options.jobId ?? null,
+                dailyTokens: client.dailyTokens,
             },
             options.signal,
             result => completion(model.id, parsed.textMode, result),

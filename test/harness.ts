@@ -74,7 +74,8 @@ export async function startApp(
             connectionString: inject('databaseUrl'),
         })
         await client.connect()
-        await client.query('truncate llm_calls, llm_jobs, provider_pauses')
+        await client.query('truncate llm_calls, llm_jobs, provider_pauses, llm_usage_daily')
+        await client.query('delete from pgboss.job')
         await client.end()
     }
     const moduleRef = await Test.createTestingModule({

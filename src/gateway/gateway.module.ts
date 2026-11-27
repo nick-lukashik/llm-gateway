@@ -5,13 +5,16 @@ import { loadCatalog } from '../domain/models.js'
 import { ClaudeProvider } from '../providers/claude.provider.js'
 import { CodexProvider } from '../providers/codex.provider.js'
 import { LLM_PROVIDERS } from '../providers/provider.js'
+import { AdminController } from './admin.controller.js'
 import { ChatService } from './chat.service.js'
 import { AdminGuard, ClientKeyGuard } from './clients.js'
 import { GatewayController } from './gateway.controller.js'
 import { GatewayRepository } from './gateway.repository.js'
 import { CATALOG, GatewayService } from './gateway.service.js'
 import { JobsService } from './jobs.service.js'
+import { MaintenanceJob } from './maintenance.job.js'
 import { GatewayMetrics } from './metrics.js'
+import { UsageRepository } from './usage.repository.js'
 
 /** config/models.json at the project root, from src/gateway or dist/gateway alike. */
 export const defaultCatalogPath = fileURLToPath(new URL('../../config/models.json', import.meta.url))
@@ -19,6 +22,7 @@ export const defaultCatalogPath = fileURLToPath(new URL('../../config/models.jso
 @Module({
     controllers: [
         GatewayController,
+        AdminController,
     ],
     providers: [
         {
@@ -48,9 +52,11 @@ export const defaultCatalogPath = fileURLToPath(new URL('../../config/models.jso
         AdminGuard,
         GatewayMetrics,
         GatewayRepository,
+        UsageRepository,
         GatewayService,
         ChatService,
         JobsService,
+        MaintenanceJob,
     ],
 })
 export class GatewayModule {}

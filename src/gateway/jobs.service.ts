@@ -1,168 +1,233 @@
-import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common'
+import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnModuleInit } from '@nestjs/common'
+import { sql } from 'drizzle-orm'
+import { fromDrizzle, type Job, PgBoss } from 'pg-boss'
+import { z } from 'zod'
+import { PG_BOSS } from '../common/jobs/jobs.module.js'
 import { type GatewayConfig, gatewayConfig } from '../config/config.js'
-import type { JobRow } from '../db/types.js'
 import { CallAborted, classifyFailure, LlmFailure } from '../domain/failures.js'
+import type { Catalog } from '../domain/models.js'
 import { ChatService } from './chat.service.js'
-import type { Client } from './clients.js'
+import { type Client, toClient } from './clients.js'
 import { GatewayRepository } from './gateway.repository.js'
-import { type ChatRequest, chatRequestSchema, errorBody } from './openai.js'
+import { CATALOG, GatewayService } from './gateway.service.js'
+import { GatewayMetrics } from './metrics.js'
+import { type ChatCompletion, type ChatRequest, chatRequestSchema, errorBody } from './openai.js'
 
-/** How often the runner looks for queued jobs besides the nudge on each new one. */
-const POLL_MS = 2000
-/** A job interrupted by this many restarts fails instead of looping. */
-const MAX_ATTEMPTS = 3
-/** How often old calls and jobs are purged. */
-const PURGE_MS = 6 * 60 * 60 * 1000
+/** The pg-boss queue of the model calls; a job's id is its llm_jobs row id. */
+export const CALL_QUEUE = 'llm.call'
+/** Jobs out of attempts land here and their rows are marked failed. */
+export const CALL_DEAD_QUEUE = 'llm.call.dead'
+
+/** A start cut off by a shutdown, a crash or the expiry is retried twice: 3 starts, as before pg-boss. */
+export const CALL_RETRY_LIMIT = 2
+/** pg-boss fails a job whose worker stopped beating (a killed pod) and retries it. */
+const HEARTBEAT_SECONDS = 30
+/** Unfinished jobs checked for a pg-boss job at startup. */
+const ADOPT_LIMIT = 1000
+
+const jobDataSchema = z.object({
+    jobId: z.uuid(),
+})
+type JobData = z.output<typeof jobDataSchema>
 
 /**
- * Long calls as jobs (D-104): stored in Postgres, run by this process (one
- * replica, D-105) up to LLM_JOB_CONCURRENCY at once, each still waiting for
- * its provider slot. A job running when the process stopped goes back to the
- * queue at startup. Also purges the journal after the retention (D-107).
+ * Long calls as jobs (D-104, D-168, D-177) on pg-boss: a row in llm_jobs
+ * (what the client reads) and a pg-boss job with the same id, queued in the
+ * same transaction (what runs it), so queued and running jobs survive a
+ * restart. Up to LLM_JOB_CONCURRENCY run at once, each still waiting for its
+ * provider slot. A start cut off by a shutdown (pg-boss fails and aborts it),
+ * a crash (missed heartbeats) or the expiry is retried; out of attempts the
+ * row fails with `provider_unavailable`, retryable. A model failure is the
+ * job's outcome and is not retried, as before.
  */
 @Injectable()
-export class JobsService implements OnApplicationBootstrap, OnApplicationShutdown {
+export class JobsService implements OnModuleInit, OnApplicationBootstrap {
     private readonly logger = new Logger('LlmJobs')
-    private readonly running = new Map<string, AbortController>()
-    private poll?: NodeJS.Timeout
-    private purgeTimer?: NodeJS.Timeout
-    private pumping = false
-    private stopped = false
 
     constructor(
         private readonly chat: ChatService,
+        private readonly gateway: GatewayService,
         private readonly repository: GatewayRepository,
+        private readonly metrics: GatewayMetrics,
+        @Inject(PG_BOSS) private readonly boss: PgBoss,
+        @Inject(CATALOG) private readonly catalog: Catalog,
         @Inject(gatewayConfig.KEY) private readonly config: GatewayConfig,
     ) {}
 
+    /** Queues exist before the first request can send to them; the dead-letter queue first. */
+    async onModuleInit() {
+        const timeouts = Object.values(this.catalog.providers).map(provider => provider?.timeoutMs ?? 0)
+        // A start: the wait for a slot, then the call and its correction round within the provider timeout.
+        const expireInSeconds = Math.ceil((this.config.queueTimeoutMs + Math.max(...timeouts)) / 1000) + 120
+        await this.boss.createQueue(CALL_DEAD_QUEUE, {
+            retryLimit: 5,
+            retryDelay: 10,
+            retryBackoff: true,
+        })
+        await this.boss.createQueue(CALL_QUEUE, {
+            retryLimit: CALL_RETRY_LIMIT,
+            retryDelay: 2,
+            expireInSeconds,
+            heartbeatSeconds: HEARTBEAT_SECONDS,
+            deadLetter: CALL_DEAD_QUEUE,
+        })
+    }
+
     async onApplicationBootstrap() {
-        const requeued = await this.repository.requeueRunning()
-        if (requeued > 0)
-            this.logger.warn(
-                {
-                    requeued,
-                },
-                'Jobs interrupted by a restart went back to the queue',
-            )
-        this.poll = setInterval(() => this.pump(), POLL_MS)
-        this.purgeTimer = setInterval(() => void this.purge(), PURGE_MS)
-        void this.purge()
-        this.pump()
+        await this.adopt()
+        await this.boss.work<JobData>(
+            CALL_QUEUE,
+            {
+                localConcurrency: this.config.jobConcurrency,
+            },
+            async ([job]: Job<JobData>[]) => {
+                if (job) await this.run(job)
+            },
+        )
+        await this.boss.work<JobData>(CALL_DEAD_QUEUE, {}, async ([job]: Job<JobData>[]) => {
+            if (job) await this.bury(job)
+        })
     }
 
-    onApplicationShutdown() {
-        this.stopped = true
-        clearInterval(this.poll)
-        clearInterval(this.purgeTimer)
-        // Interrupted jobs are requeued by the next process.
-        for (const controller of this.running.values()) controller.abort()
-    }
-
-    /** Queues a job; the client's rights and the request shape are checked before it is stored. */
+    /** Queues a job: the client's rights, its daily limit and the request shape are checked first. */
     async enqueue(client: Client, request: ChatRequest) {
         this.chat.prepare(client, request)
-        const job = await this.repository.insertJob(client.name, request, request.metadata?.purpose ?? null)
-        this.pump()
-        return job
+        await this.gateway.refuseOverLimit(client.name, client.dailyTokens)
+        return this.repository.createJob(client.name, request, request.metadata?.purpose ?? null, async (tx, id) => {
+            await this.boss.send(
+                CALL_QUEUE,
+                {
+                    jobId: id,
+                } satisfies JobData,
+                {
+                    id,
+                    db: fromDrizzle(tx, sql),
+                },
+            )
+        })
     }
 
     find(client: Client, id: string) {
         return this.repository.findJob(client.name, id)
     }
 
-    /** Starts as many queued jobs as there are free places. */
-    pump() {
-        if (this.pumping || this.stopped) return
-        const free = this.config.jobConcurrency - this.running.size
-        if (free <= 0) return
-        this.pumping = true
-        this.repository
-            .claimJobs(free)
-            .then(jobs => {
-                for (const job of jobs) void this.runJob(job)
-            })
-            .catch((err: unknown) =>
-                this.logger.error(
-                    {
-                        err,
-                    },
-                    'Job claim failed',
-                ),
+    /**
+     * Every unfinished job has a pg-boss job: a send with the row's id is a
+     * no-op when one exists. Picks up the jobs the release before pg-boss
+     * queued (or left running when it stopped).
+     */
+    private async adopt() {
+        let adopted = 0
+        for (const row of await this.repository.unfinishedJobs(ADOPT_LIMIT)) {
+            const sent = await this.boss.send(
+                CALL_QUEUE,
+                {
+                    jobId: row.id,
+                } satisfies JobData,
+                {
+                    id: row.id,
+                },
             )
-            .finally(() => {
-                this.pumping = false
-            })
-    }
-
-    private async runJob(job: JobRow) {
-        const controller = new AbortController()
-        this.running.set(job.id, controller)
-        try {
-            if (job.attempts > MAX_ATTEMPTS) {
-                await this.repository.finishJob(job.id, {
-                    error: errorBody(
-                        new LlmFailure('provider_unavailable', `Stopped by ${MAX_ATTEMPTS} restarts; send it again`, {
-                            retryable: true,
-                        }),
-                    ).error,
-                })
-                return
-            }
-            const request = chatRequestSchema.parse(job.request)
-            const client = {
-                name: job.client,
-                models: [
-                    '*',
-                ],
-                admin: false,
-            }
-            const result = await this.chat.complete(client, request, {
-                jobId: job.id,
-                signal: controller.signal,
-            })
-            await this.repository.finishJob(job.id, {
-                result,
-            })
-        } catch (error) {
-            // Stopped by shutdown: stays running, the next process requeues it.
-            if (error instanceof CallAborted || this.stopped) return
-            await this.repository
-                .finishJob(job.id, {
-                    error: errorBody(classifyFailure(error, 'job')).error,
-                })
-                .catch((err: unknown) =>
-                    this.logger.error(
-                        {
-                            err,
-                            jobId: job.id,
-                        },
-                        'Job finish failed',
-                    ),
-                )
-        } finally {
-            this.running.delete(job.id)
-            this.pump()
+            if (sent) adopted++
         }
+        if (adopted > 0)
+            this.logger.warn(
+                {
+                    adopted,
+                },
+                'Unfinished jobs without a pg-boss job were queued',
+            )
     }
 
-    private async purge() {
-        try {
-            const deleted = await this.repository.purge(this.config.retentionDays)
-            if (deleted.calls > 0 || deleted.jobs > 0)
-                this.logger.log(
-                    {
-                        ...deleted,
-                        days: this.config.retentionDays,
-                    },
-                    'Journal purged',
-                )
-        } catch (err) {
+    /** The client as configured now: a key removed from LLM_CLIENTS takes its queued jobs with it. */
+    private clientOf(name: string): Client | null {
+        const entry = this.config.clients.find(client => client.name === name)
+        return entry ? toClient(entry) : null
+    }
+
+    private async run(job: Job<JobData>) {
+        const data = jobDataSchema.safeParse(job.data)
+        if (!data.success) {
             this.logger.error(
                 {
-                    err,
+                    bossJobId: job.id,
                 },
-                'Journal purge failed',
+                'Job data is invalid, dropped',
             )
+            return
         }
+        const { jobId } = data.data
+        const row = await this.repository.claimJob(jobId)
+        // Finished already (a repeat after its outcome was stored) or deleted.
+        if (!row) return
+        const log = {
+            jobId,
+            attempt: row.attempts,
+        }
+        const finish = async (outcome: ChatCompletion | LlmFailure) => {
+            const failed = outcome instanceof LlmFailure
+            const done = await this.repository.finishJob(
+                jobId,
+                failed
+                    ? {
+                          error: errorBody(outcome).error,
+                      }
+                    : {
+                          result: outcome,
+                      },
+            )
+            if (done) this.metrics.job(failed ? 'failed' : 'succeeded')
+        }
+
+        const request = chatRequestSchema.safeParse(row.request)
+        if (!request.success) return finish(new LlmFailure('bad_request', 'The stored request is invalid'))
+        const client = this.clientOf(row.client)
+        if (!client) return finish(new LlmFailure('bad_request', `Client ${row.client} is no longer configured`))
+        // A start cut off after its call succeeded: the journal has the answer, no second call.
+        const stored = await this.repository.answerForJob(jobId)
+        if (stored) return finish(stored as ChatCompletion)
+
+        this.logger.log(log, 'Job started')
+        try {
+            const result = await this.chat.complete(client, request.data, {
+                jobId,
+                signal: job.signal,
+            })
+            await finish(result)
+        } catch (error) {
+            if (error instanceof CallAborted || job.signal.aborted) {
+                // pg-boss failed it (shutdown, expiry): it retries it, or sends it to the dead queue.
+                await this.repository.requeueJob(jobId)
+                this.metrics.job('interrupted')
+                this.logger.warn(log, 'Job interrupted, it will be retried')
+                throw error instanceof CallAborted ? error : new CallAborted()
+            }
+            await finish(classifyFailure(error, 'job'))
+        }
+    }
+
+    /** Out of attempts: the row is marked failed for its client to see. */
+    private async bury(job: Job<JobData>) {
+        const data = jobDataSchema.safeParse(job.data)
+        if (!data.success) return
+        const done = await this.repository.finishJob(data.data.jobId, {
+            error: errorBody(
+                new LlmFailure(
+                    'provider_unavailable',
+                    'The job was cut off by restarts too many times; send it again',
+                    {
+                        retryable: true,
+                    },
+                ),
+            ).error,
+        })
+        if (!done) return
+        this.metrics.job('dead')
+        this.logger.warn(
+            {
+                jobId: data.data.jobId,
+            },
+            'Job out of attempts, marked failed',
+        )
     }
 }
