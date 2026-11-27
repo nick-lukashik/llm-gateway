@@ -12,17 +12,17 @@ Subscriptions are for personal use: calls for other people need paid keys.
 
 | Component                        | Version       | Why this one                                                                              |
 | -------------------------------- | ------------- | ----------------------------------------------------------------------------------------- |
-| Node.js / pnpm                   | 26.13 / 12.16 | `.node-version`, `packageManager`                                                         |
-| NestJS (express)                 | 12.3          | ESM; built-in `StandardSchemaValidationPipe` and `useSecurityHeaders()` (replaces helmet) |
+| Node.js / pnpm                   | 26.13 / 12.23 | `.node-version`, `packageManager`                                                         |
+| NestJS (express)                 | 12.6          | ESM; built-in `StandardSchemaValidationPipe` and `useSecurityHeaders()` (replaces helmet) |
 | TypeScript                       | 7.0           | native `tsc` for build and typecheck; no Nest CLI, SWC only in tests                      |
 | Zod                              | 4.6           | one schema for validation and OpenAPI; no class-validator or nestjs-zod                   |
-| @nestjs/swagger                  | 12.0.5        | understands Standard JSON Schema from Zod                                                 |
+| @nestjs/swagger                  | 12.1          | understands Standard JSON Schema from Zod                                                 |
 | Drizzle ORM / drizzle-kit        | 0.45 / 0.31   | SQL migrations, typed queries; driver `pg` 8.23                                           |
 | PostgreSQL                       | 18.6          | `uuidv7()` built in                                                                       |
 | pino / nestjs-pino               | 10.4 / 5.3    | JSON logs with `requestId`                                                                |
 | @prometheus-io/client            | 0.16          | prom-client, moved to the Prometheus organization                                         |
-| @nestjs/terminus, @nestjs/config | 12.1, 12.0    | official Nest modules                                                                     |
-| Vitest / Testcontainers          | 5.0 / 12.2    |                                                                                           |
+| @nestjs/terminus, @nestjs/config | 12.2, 12.1    | official Nest modules                                                                     |
+| Vitest / Testcontainers          | 5.1 / 12.2    |                                                                                           |
 | Biome                            | 2.6           | linter and formatter                                                                      |
 
 Versions are pinned exactly. [Renovate](https://docs.renovatebot.com/) (`renovate.json`, the same policy in every repo) opens update PRs on Monday early morning (`Asia/Tbilisi`): one PR for all non-major updates, one per major, weekly lockfile maintenance. Releases younger than 3 days are skipped.
@@ -145,7 +145,7 @@ docker run --rm --read-only --tmpfs /tmp --user 10001:10001 --network llm-gatewa
   -e DATABASE_URL=postgres://app:app@postgres:5432/app llm-gateway node dist/db/migrate.js
 ```
 
-- Base `node:26.13.0-trixie-slim`. Stages: `deps` (pnpm from `packageManager`) → `build` (`dist/`) and `prod-deps` (`node_modules` without dev dependencies) → `runtime`.
+- Base `node:26.13.1-trixie-slim`. Stages: `deps` (pnpm from `packageManager`) → `build` (`dist/`) and `prod-deps` (`node_modules` without dev dependencies) → `runtime`.
 - `APP_VERSION` is the only build arg: nothing environment-specific is baked in, so one image runs on stage and prod.
 - App files are owned by root, the app runs as uid `10001` and writes nothing: a read-only root filesystem works, only `/tmp` is writable.
 - `PORT` is 3000 in the image (the local default without it is 4000), metrics on `METRICS_PORT` 9464. `HEALTHCHECK` polls `/health/ready` for `docker run`; Kubernetes ignores it and uses its probes.
