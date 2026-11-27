@@ -3,7 +3,11 @@ import type { GenerateCall, LlmProvider, ProviderResult } from '../providers/pro
 
 type Step = (call: GenerateCall) => Promise<ProviderResult> | ProviderResult
 
-/** A provider that answers from a script of steps; the default step returns `{ ok: true }`. */
+/**
+ * A provider that answers from a script of steps; the default step returns
+ * `{ content: 'ok' }` for a text call (the gateway's wrapper) and `{ ok: true }`
+ * otherwise, with 10 input and 2 output tokens.
+ */
 export class FakeProvider implements LlmProvider {
     readonly calls: GenerateCall[] = []
     readonly steps: Step[] = []
@@ -24,10 +28,15 @@ export class FakeProvider implements LlmProvider {
         this.calls.push(call)
         const step = this.steps.shift()
         if (step) return step(call)
+        const text = Object.hasOwn(call.schema.properties ?? {}, 'content')
         return {
-            output: {
-                ok: true,
-            },
+            output: text
+                ? {
+                      content: 'ok',
+                  }
+                : {
+                      ok: true,
+                  },
             model: call.profile.model,
             inputTokens: 10,
             outputTokens: 2,

@@ -16,7 +16,16 @@ export type Client = {
     name: string
     models: string[]
     admin: boolean
+    /** Input plus output tokens per UTC day; null: unlimited. */
+    dailyTokens: number | null
 }
+
+export const toClient = (entry: ClientEntry): Client => ({
+    name: entry.name,
+    models: entry.models,
+    admin: entry.admin,
+    dailyTokens: entry.dailyTokens ?? null,
+})
 
 type ClientRequest = Request & {
     llmClient?: Client
@@ -42,11 +51,7 @@ export class ClientKeyGuard implements CanActivate {
     constructor(@Inject(gatewayConfig.KEY) config: GatewayConfig) {
         this.clients = config.clients.map((entry: ClientEntry) => ({
             hash: Buffer.from(entry.keySha256, 'hex'),
-            client: {
-                name: entry.name,
-                models: entry.models,
-                admin: entry.admin,
-            },
+            client: toClient(entry),
         }))
     }
 

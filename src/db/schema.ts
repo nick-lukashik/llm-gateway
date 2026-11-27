@@ -1,5 +1,18 @@
 import { sql } from 'drizzle-orm'
-import { boolean, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core'
+import {
+    bigint,
+    boolean,
+    date,
+    index,
+    integer,
+    jsonb,
+    pgTable,
+    primaryKey,
+    text,
+    timestamp,
+    unique,
+    uuid,
+} from 'drizzle-orm/pg-core'
 
 /** Millisecond precision, so an ISO string from JSON round-trips exactly. */
 const at = (name: string) =>
@@ -64,7 +77,11 @@ export const providerPauses = pgTable(
     ],
 )
 
-/** Long calls: queued, run by this process, the result read later (D-104). */
+/**
+ * Long calls (D-104): what the client reads. pg-boss runs them (queue
+ * `llm.call`, its job id is this row's id); `attempts` counts the starts, a
+ * start cut off by a restart included.
+ */
 export const llmJobs = pgTable(
     'llm_jobs',
     {
@@ -83,5 +100,43 @@ export const llmJobs = pgTable(
     },
     t => [
         index('llm_jobs_status_created_at_idx').on(t.status, t.createdAt),
+    ],
+)
+
+/**
+ * Calls per UTC day, client, purpose, provider and model (D-168, D-177):
+ * counts only, no texts, kept without the journal's retention. Recomputed from
+ * llm_calls for the days the journal still holds in full (an idempotent
+ * upsert, src/gateway/usage.repository.ts); older days stay as they were.
+ */
+export const llmUsageDaily = pgTable(
+    'llm_usage_daily',
+    {
+        day: date('day', {
+            mode: 'string',
+        }).notNull(),
+        client: text('client').notNull(),
+        /** `metadata.purpose` of the calls; null for calls without one. */
+        purpose: text('purpose'),
+        provider: text('provider').notNull(),
+        model: text('model').notNull(),
+        calls: integer('calls').notNull(),
+        /** Calls whose outcome is not `ok`: errors, refusals and calls the caller left. */
+        errors: integer('errors').notNull(),
+        tokensIn: bigint('tokens_in', {
+            mode: 'number',
+        }).notNull(),
+        tokensOut: bigint('tokens_out', {
+            mode: 'number',
+        }).notNull(),
+        /** Total time of the calls, slot waits included. */
+        durationMs: bigint('duration_ms', {
+            mode: 'number',
+        }).notNull(),
+        updatedAt: at('updated_at').notNull().defaultNow(),
+    },
+    t => [
+        // A call without a purpose counts under one null key.
+        unique('llm_usage_daily_key').on(t.day, t.client, t.purpose, t.provider, t.model).nullsNotDistinct(),
     ],
 )

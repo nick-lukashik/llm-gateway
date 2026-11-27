@@ -15,6 +15,7 @@ import { Semaphore } from '../domain/semaphore.js'
 import { type GenerateCall, LLM_PROVIDERS, type LlmProvider, type ProviderResult } from '../providers/provider.js'
 import { GatewayRepository } from './gateway.repository.js'
 import { GatewayMetrics } from './metrics.js'
+import { UsageRepository } from './usage.repository.js'
 
 /** The loaded model catalog. */
 export const CATALOG = Symbol('CATALOG')
@@ -37,6 +38,8 @@ export type CallRequest = {
     journal: unknown
     idempotencyKey: string | null
     jobId: string | null
+    /** The client's daily token limit; null: unlimited. */
+    dailyTokens: number | null
     timeoutMs?: number
 }
 
@@ -61,6 +64,10 @@ export type ProviderStatus = {
 /** A correction round needs at least this much of the time budget left. */
 const MIN_CORRECTION_MS = 5000
 
+/** The next 00:00 UTC after `now`: when a daily token limit starts again. */
+export const nextUtcDay = (now = new Date()) =>
+    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+
 const addTokens = (a: number | null, b: number | null) => (a === null && b === null ? null : (a ?? 0) + (b ?? 0))
 
 /**
@@ -83,6 +90,7 @@ export class GatewayService implements OnModuleInit {
         @Inject(LLM_PROVIDERS) providers: LlmProvider[],
         @Inject(gatewayConfig.KEY) private readonly config: GatewayConfig,
         private readonly repository: GatewayRepository,
+        private readonly usage: UsageRepository,
         private readonly metrics: GatewayMetrics,
     ) {
         for (const provider of providers) {
@@ -119,6 +127,25 @@ export class GatewayService implements OnModuleInit {
 
     model(id: string): CatalogModel | undefined {
         return this.catalog.models.find(model => model.id === id)
+    }
+
+    /**
+     * Refuses a client over its daily token limit: 429 budget_exceeded until
+     * 00:00 UTC, not a provider pause. Checked before each call and each job
+     * submission, so calls already running when the limit is reached still
+     * finish and can pass it.
+     */
+    async refuseOverLimit(client: string, dailyTokens: number | null) {
+        if (dailyTokens === null) return
+        const used = await this.usage.tokensToday(client)
+        if (used >= dailyTokens)
+            throw new LlmFailure(
+                'budget_exceeded',
+                `The daily token limit of this key is used up: ${used} of ${dailyTokens} tokens today (UTC)`,
+                {
+                    resetsAt: nextUtcDay(),
+                },
+            )
     }
 
     providerList(): ProviderStatus[] {
@@ -176,6 +203,7 @@ export class GatewayService implements OnModuleInit {
                     throw new LlmFailure('bad_request', `Unusable schema: ${error.message}`)
                 throw error
             }
+            await this.refuseOverLimit(request.client, request.dailyTokens)
             const provider = this.providers.get(profile.provider)
             const slots = this.slots.get(profile.provider)
             const settings = this.catalog.providers[profile.provider]
@@ -279,7 +307,11 @@ export class GatewayService implements OnModuleInit {
                 retryable: failure.retryable,
                 resetsAt: failure.resetsAt?.toISOString() ?? null,
             }
-            if (failure.code === 'bad_request' || failure.code === 'provider_quota')
+            if (
+                failure.code === 'bad_request'
+                || failure.code === 'provider_quota'
+                || failure.code === 'budget_exceeded'
+            )
                 this.logger.log(line, 'Generation refused')
             else this.logger.warn(line, 'Generation failed')
             await this.journal({

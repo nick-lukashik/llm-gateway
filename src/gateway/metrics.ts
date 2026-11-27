@@ -21,12 +21,13 @@ export class GatewayMetrics {
     private readonly queueWait: Histogram<'provider'>
     private readonly tokens: Counter<'provider' | 'direction'>
     private readonly corrections: Counter<'provider' | 'result'>
+    private readonly jobs: Counter<'result'>
     private state: () => ProviderState[] = () => []
 
     constructor(metrics: Metrics) {
         this.calls = metrics.counter({
             name: 'llm_gateway_generations_total',
-            help: 'Generations by provider, profile and outcome: ok, provider_quota, provider_unavailable, provider_timeout, invalid_output, bad_request, aborted (the caller left).',
+            help: 'Generations by provider, profile and outcome: ok, provider_quota, provider_unavailable, provider_timeout, invalid_output, bad_request, budget_exceeded (over the client daily token limit), aborted (the caller left).',
             labelNames: [
                 'provider',
                 'profile',
@@ -83,6 +84,13 @@ export class GatewayMetrics {
             help: 'Correction rounds after an answer that failed the schema, by result: fixed or failed.',
             labelNames: [
                 'provider',
+                'result',
+            ],
+        })
+        this.jobs = metrics.counter({
+            name: 'llm_gateway_jobs_total',
+            help: 'Job runs by result: succeeded, failed, interrupted (shutdown or expiry, retried), dead (out of attempts).',
+            labelNames: [
                 'result',
             ],
         })
@@ -157,6 +165,12 @@ export class GatewayMetrics {
                 },
                 output,
             )
+    }
+
+    job(result: 'succeeded' | 'failed' | 'interrupted' | 'dead') {
+        this.jobs.inc({
+            result,
+        })
     }
 
     corrected(provider: string, fixed: boolean) {

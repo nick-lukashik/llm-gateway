@@ -9,3 +9,4 @@ export type Tx = TxOf<Db>
 export type CallRow = typeof schema.llmCalls.$inferSelect
 export type NewCall = typeof schema.llmCalls.$inferInsert
 export type JobRow = typeof schema.llmJobs.$inferSelect
+export type UsageRow = typeof schema.llmUsageDaily.$inferSelect

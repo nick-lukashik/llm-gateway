@@ -1,12 +1,12 @@
 # AGENTS.md
 
-The model gateway of the platform, created from `nest-starter`: every service calls models only through it. An OpenAI-compatible API (`/api/v1/chat/completions`, `/api/v1/models`) plus jobs for long calls, over the owner's subscriptions: Codex CLI and Claude Code CLI. One replica with the Codex login volume (an exception to the contract). Postgres keeps the call journal with texts (14 days), provider pauses and jobs. Redis, RabbitMQ (events through outbox/inbox) and pg-boss (jobs) are added only when the service uses them, copied from `nest-example` ("Add a capability" in `README.md`). The human-facing description is `README.md`.
+The model gateway of the platform, created from `nest-starter`: every service calls models only through it. An OpenAI-compatible API (`/api/v1/chat/completions`, `/api/v1/models`) plus jobs for long calls, over the owner's subscriptions: Codex CLI and Claude Code CLI. One replica with the Codex login volume (an exception to the contract). Postgres keeps the call journal with texts (14 days), the daily usage rollup (kept), provider pauses and jobs; jobs run on pg-boss (copied from `nest-example`). Redis and RabbitMQ (events through outbox/inbox) are added only when the service uses them ("Add a capability" in `README.md`). The human-facing description is `README.md`.
 
 ## Commands
 
 - `pnpm install`: dependencies (Node 26, pnpm 12; versions pinned exactly).
 - `pnpm infra:up` / `pnpm infra:down` / `pnpm infra:reset`: Postgres 18 from `compose.yaml`.
-- `pnpm env:local`: `.env` from `.env.example`; `pnpm db:migrate`: build and migrations; `pnpm dev`: build, `tsc --watch` and `node --watch`.
+- `pnpm env:local`: `.env` from `.env.example`; `pnpm db:migrate`: build, migrations and the pg-boss schema; `pnpm dev`: build, `tsc --watch` and `node --watch`.
 - `pnpm verify`: lint + typecheck + build + test. It must be green before you hand work over; report the command and its actual result.
 - `pnpm test:unit` (no Docker), `pnpm test:int` (Testcontainers, needs Docker). Tests only through `vitest run`, never watch.
 - `pnpm db:generate --name <what_it_changes>`: an SQL migration from `src/db/schema.ts`; read the generated SQL.
@@ -16,11 +16,11 @@ The model gateway of the platform, created from `nest-starter`: every service ca
 
 - `src/main.ts`: entry point; `src/app.module.ts`: module wiring; `src/app.setup.ts`: HTTP setup (shared with the tests).
 - `src/config/`: the Zod env schema (`env.ts`) and the `registerAs` groups (`config.ts`). Nothing else reads `process.env`.
-- `src/common/`: infrastructure without business logic, identical to `nest-example` and ready to move into a package: `http` (errors, request id, cursors, validation), `database`, `health`, `metrics`, `logging`, `openapi`, `context` (AsyncLocalStorage). Change it in `nest-example` first, then copy it here.
+- `src/common/`: infrastructure without business logic, identical to `nest-example` and ready to move into a package: `http` (errors, request id, cursors, validation), `database`, `health`, `metrics`, `logging`, `openapi`, `context` (AsyncLocalStorage), `jobs` (pg-boss). Change it in `nest-example` first, then copy it here.
 - `src/db/`: Drizzle schema, types, `migrate.ts` (Argo CD Sync-hook Job before the Deployment: `node dist/db/migrate.js`).
 - `src/domain/`: provider-independent logic ported from the old gateway: `json-schema.ts` (schema checks, Codex strict mode, draft 7), `coerce.ts`, `failures.ts` (error codes and the text classifier), `pause.ts` (reset time from limit messages), `semaphore.ts`, `models.ts` (the catalog `config/models.json`).
 - `src/providers/`: Codex and Claude as CLI runs (`run-cli.ts`, an env allowlist in `provider.ts`). A new CLI version can change the output they parse: pin it in the Dockerfile and check with a live call.
-- `src/gateway/`: the API (`gateway.controller.ts`, OpenAI shapes in `openai.ts`), client keys (`clients.ts`), the call path with slots, pauses and the journal (`gateway.service.ts`), jobs and the purge (`jobs.service.ts`), SQL (`gateway.repository.ts`).
+- `src/gateway/`: the API (`gateway.controller.ts`, OpenAI shapes in `openai.ts`), client keys and their daily token limit (`clients.ts`), the call path with slots, pauses, the limit and the journal (`gateway.service.ts`), jobs on pg-boss (`jobs.service.ts`), the rollup and the purge (`maintenance.job.ts`), admin usage routes (`admin.controller.ts`, `admin.schemas.ts`), SQL (`gateway.repository.ts`, `usage.repository.ts`).
 - `config/models.json`: models and efforts the CLIs offer; no secrets.
 - `scripts/client-key.mjs`: a new client key (stdout) and its `LLM_CLIENTS` entry (stderr).
 - `drizzle/`: SQL migrations and `meta/` (generated, never edited by hand).
@@ -38,6 +38,7 @@ The model gateway of the platform, created from `nest-starter`: every service ca
 - Degradation: readiness requires Postgres only. A dependency added later registers a check with `health.register(name, check, { required })`; a degradable one (Redis, RabbitMQ) uses `required: false`, is reported as `degraded`, never blocks startup, and has a metric for its degraded state.
 - Migrations: compatible with the code that is running (add → switch → remove, over separate releases), forward only, no long-locking DDL mixed into a feature migration, backfills as batched jobs ("Migrations" in `README.md`).
 - A new environment variable: `src/config/env.ts` → a group in `src/config/config.ts` → `.env.example`. Secrets have no `.default()`.
+- Jobs: a job's handler is idempotent (at-least-once): it claims the row, reuses a journaled answer, and throws only for a start cut off (pg-boss retries it); a model failure is stored as the outcome. A new pg-boss queue is created in `onModuleInit`, its worker in `onApplicationBootstrap`, and the pool `max` in `app.module.ts` stays above the workers.
 - Capabilities: add Redis, RabbitMQ or pg-boss only when a feature of this service needs it, by copying it from `nest-example` with its tests ("Add a capability" in `README.md`), never a stub "for later". Which one: a job for this service's own background work, an event to tell other services, a consumer with the inbox to react to theirs; not event → own job when the handler can do the work in its transaction ("Which mechanism" in nest-example's README).
 - Logs: pino JSON, only `Logger` from `@nestjs/common`; the object first, a constant message. Secrets, tokens and personal data are never logged.
 - Times in the API are ISO strings in UTC; ids are uuidv7 (`uuidv7()` in PostgreSQL 18, `randomUUIDv7()` in Node).
@@ -50,7 +51,7 @@ The model gateway of the platform, created from `nest-starter`: every service ca
 Short rules for each library, checked against the installed versions. Read the relevant file before changing code in that area.
 
 - `.claude/rules/nestjs.md`: NestJS 12, @nestjs/config, terminus, throttler, swagger (NestJS llms.txt).
-- Redis, RabbitMQ and pg-boss rules come with the capability: `.claude/rules/{redis,rabbitmq,pg-boss}.md` of nest-example.
+- `.claude/rules/pg-boss.md`: pg-boss 12 (from nest-example). Redis and RabbitMQ rules come with the capability: `.claude/rules/{redis,rabbitmq}.md` of nest-example.
 - `.claude/rules/zod.md`: Zod 4 (Zod llms.txt).
 - `.claude/rules/drizzle.md`: Drizzle ORM 0.45 and drizzle-kit 0.31 (Drizzle llms.txt).
 - `.claude/rules/pino.md`: pino 10 and nestjs-pino 5 (docs summary).

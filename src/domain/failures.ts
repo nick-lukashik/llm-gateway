@@ -5,6 +5,7 @@ export const llmErrorCodes = [
     'provider_timeout',
     'invalid_output',
     'bad_request',
+    'budget_exceeded',
 ] as const
 export type LlmErrorCode = (typeof llmErrorCodes)[number]
 
@@ -19,6 +20,7 @@ export type LlmError = {
 export const statusOf: Record<LlmErrorCode, number> = {
     bad_request: 400,
     invalid_output: 422,
+    budget_exceeded: 429,
     provider_quota: 429,
     provider_unavailable: 503,
     provider_timeout: 504,
@@ -27,6 +29,8 @@ export const statusOf: Record<LlmErrorCode, number> = {
 const retryableByDefault: Record<LlmErrorCode, boolean> = {
     bad_request: false,
     invalid_output: false,
+    // The client's own daily token limit: retry after resetsAt (00:00 UTC).
+    budget_exceeded: false,
     // Retry after resetsAt, not now.
     provider_quota: false,
     provider_unavailable: true,
